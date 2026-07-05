@@ -1,0 +1,930 @@
+-- LocalScript
+
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+
+local connections = {}
+local closed = false
+local logCounter = 0
+
+local thumbnailItems = {}
+local currentViewerPreview = nil
+local currentViewerRecord = nil
+local viewerHovering = false
+local viewerDragging = false
+local viewerDragLastPos = nil
+
+local function trackConnection(conn)
+	table.insert(connections, conn)
+	return conn
+end
+
+local function disconnectAll()
+	for _, conn in ipairs(connections) do
+		if conn and conn.Disconnect then
+			conn:Disconnect()
+		end
+	end
+	table.clear(connections)
+end
+
+local function clearThumbnailItems()
+	for _, item in ipairs(thumbnailItems) do
+		if item and item.destroy then
+			pcall(item.destroy)
+		end
+	end
+	table.clear(thumbnailItems)
+end
+
+local function destroyCurrentViewerPreview()
+	if currentViewerPreview and currentViewerPreview.destroy then
+		pcall(currentViewerPreview.destroy)
+	end
+	currentViewerPreview = nil
+	currentViewerRecord = nil
+	viewerDragging = false
+	viewerDragLastPos = nil
+end
+
+local function copyToClipboard(text)
+	local ok = false
+
+	if typeof(setclipboard) == "function" then
+		ok = pcall(setclipboard, text)
+	elseif typeof(toclipboard) == "function" then
+		ok = pcall(toclipboard, text)
+	end
+
+	return ok
+end
+
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "MeshLoggerGui"
+screenGui.ResetOnSpawn = false
+screenGui.IgnoreGuiInset = true
+screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+screenGui.Parent = playerGui
+
+local main = Instance.new("Frame")
+main.Name = "Main"
+main.Size = UDim2.new(0, 580, 0, 390)
+main.Position = UDim2.new(0, 18, 0.5, -195)
+main.BackgroundColor3 = Color3.fromRGB(24, 24, 28)
+main.BorderSizePixel = 0
+main.ZIndex = 1
+main.Parent = screenGui
+
+local mainCorner = Instance.new("UICorner")
+mainCorner.CornerRadius = UDim.new(0, 10)
+mainCorner.Parent = main
+
+local mainStroke = Instance.new("UIStroke")
+mainStroke.Color = Color3.fromRGB(70, 70, 80)
+mainStroke.Thickness = 1
+mainStroke.Parent = main
+
+local topBar = Instance.new("Frame")
+topBar.Name = "TopBar"
+topBar.Size = UDim2.new(1, 0, 0, 42)
+topBar.BackgroundColor3 = Color3.fromRGB(32, 32, 38)
+topBar.BorderSizePixel = 0
+topBar.Active = true
+topBar.Selectable = false
+topBar.ZIndex = 2
+topBar.Parent = main
+
+local topCorner = Instance.new("UICorner")
+topCorner.CornerRadius = UDim.new(0, 10)
+topCorner.Parent = topBar
+
+local title = Instance.new("TextLabel")
+title.BackgroundTransparency = 1
+title.Size = UDim2.new(1, -60, 1, 0)
+title.Position = UDim2.new(0, 12, 0, 0)
+title.Font = Enum.Font.GothamBold
+title.Text = "Mesh Logger"
+title.TextSize = 18
+title.TextColor3 = Color3.fromRGB(245, 245, 245)
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.ZIndex = 3
+title.Parent = topBar
+
+local closeButton = Instance.new("TextButton")
+closeButton.Name = "CloseButton"
+closeButton.Size = UDim2.new(0, 28, 0, 28)
+closeButton.Position = UDim2.new(1, -36, 0, 7)
+closeButton.BackgroundColor3 = Color3.fromRGB(56, 36, 36)
+closeButton.BorderSizePixel = 0
+closeButton.Font = Enum.Font.GothamBold
+closeButton.Text = "X"
+closeButton.TextSize = 16
+closeButton.TextColor3 = Color3.fromRGB(255, 235, 235)
+closeButton.AutoButtonColor = true
+closeButton.ZIndex = 3
+closeButton.Parent = topBar
+
+local closeCorner = Instance.new("UICorner")
+closeCorner.CornerRadius = UDim.new(0, 7)
+closeCorner.Parent = closeButton
+
+-- List Panel
+local listPanel = Instance.new("Frame")
+listPanel.Name = "ListPanel"
+listPanel.BackgroundTransparency = 1
+listPanel.Size = UDim2.new(1, 0, 1, -42)
+listPanel.Position = UDim2.new(0, 0, 0, 42)
+listPanel.ZIndex = 2
+listPanel.Parent = main
+
+local searchBox = Instance.new("TextBox")
+searchBox.Name = "SearchBox"
+searchBox.Size = UDim2.new(1, -24, 0, 32)
+searchBox.Position = UDim2.new(0, 12, 0, 10)
+searchBox.BackgroundColor3 = Color3.fromRGB(36, 36, 42)
+searchBox.BorderSizePixel = 0
+searchBox.Font = Enum.Font.Gotham
+searchBox.PlaceholderText = "Search meshes by name, path, MeshId, TextureId, or type..."
+searchBox.Text = ""
+searchBox.TextSize = 14
+searchBox.TextColor3 = Color3.fromRGB(235, 235, 235)
+searchBox.PlaceholderColor3 = Color3.fromRGB(150, 150, 160)
+searchBox.ClearTextOnFocus = false
+searchBox.ZIndex = 3
+searchBox.Parent = listPanel
+
+local searchCorner = Instance.new("UICorner")
+searchCorner.CornerRadius = UDim.new(0, 8)
+searchCorner.Parent = searchBox
+
+local countLabel = Instance.new("TextLabel")
+countLabel.BackgroundTransparency = 1
+countLabel.Size = UDim2.new(1, -24, 0, 18)
+countLabel.Position = UDim2.new(0, 12, 0, 48)
+countLabel.Font = Enum.Font.Gotham
+countLabel.Text = "Logged meshes: 0"
+countLabel.TextSize = 13
+countLabel.TextColor3 = Color3.fromRGB(190, 190, 200)
+countLabel.TextXAlignment = Enum.TextXAlignment.Left
+countLabel.ZIndex = 3
+countLabel.Parent = listPanel
+
+local scrolling = Instance.new("ScrollingFrame")
+scrolling.Name = "List"
+scrolling.Size = UDim2.new(1, -24, 1, -80)
+scrolling.Position = UDim2.new(0, 12, 0, 70)
+scrolling.BackgroundColor3 = Color3.fromRGB(20, 20, 24)
+scrolling.BorderSizePixel = 0
+scrolling.ScrollBarThickness = 8
+scrolling.ScrollBarImageColor3 = Color3.fromRGB(120, 120, 135)
+scrolling.CanvasSize = UDim2.new(0, 0, 0, 0)
+scrolling.AutomaticCanvasSize = Enum.AutomaticSize.None
+scrolling.ZIndex = 3
+scrolling.Parent = listPanel
+
+local listCorner = Instance.new("UICorner")
+listCorner.CornerRadius = UDim.new(0, 8)
+listCorner.Parent = scrolling
+
+local listPadding = Instance.new("UIPadding")
+listPadding.PaddingTop = UDim.new(0, 8)
+listPadding.PaddingBottom = UDim.new(0, 8)
+listPadding.PaddingLeft = UDim.new(0, 8)
+listPadding.PaddingRight = UDim.new(0, 8)
+listPadding.Parent = scrolling
+
+local layout = Instance.new("UIListLayout")
+layout.Padding = UDim.new(0, 8)
+layout.SortOrder = Enum.SortOrder.LayoutOrder
+layout.Parent = scrolling
+
+-- Viewer Panel
+local viewerPanel = Instance.new("Frame")
+viewerPanel.Name = "ViewerPanel"
+viewerPanel.BackgroundTransparency = 1
+viewerPanel.Size = UDim2.new(1, 0, 1, -42)
+viewerPanel.Position = UDim2.new(0, 0, 0, 42)
+viewerPanel.Visible = false
+viewerPanel.ZIndex = 4
+viewerPanel.Parent = main
+
+local viewerTitle = Instance.new("TextLabel")
+viewerTitle.BackgroundTransparency = 1
+viewerTitle.Size = UDim2.new(1, -24, 0, 22)
+viewerTitle.Position = UDim2.new(0, 12, 0, 10)
+viewerTitle.Font = Enum.Font.GothamBold
+viewerTitle.Text = "Mesh Viewer"
+viewerTitle.TextSize = 18
+viewerTitle.TextColor3 = Color3.fromRGB(245, 245, 245)
+viewerTitle.TextXAlignment = Enum.TextXAlignment.Left
+viewerTitle.ZIndex = 5
+viewerTitle.Parent = viewerPanel
+
+local viewerInfo = Instance.new("TextLabel")
+viewerInfo.BackgroundTransparency = 1
+viewerInfo.Size = UDim2.new(1, -24, 0, 34)
+viewerInfo.Position = UDim2.new(0, 12, 0, 32)
+viewerInfo.Font = Enum.Font.Gotham
+viewerInfo.Text = ""
+viewerInfo.TextSize = 13
+viewerInfo.TextWrapped = true
+viewerInfo.TextColor3 = Color3.fromRGB(200, 200, 210)
+viewerInfo.TextXAlignment = Enum.TextXAlignment.Left
+viewerInfo.TextYAlignment = Enum.TextYAlignment.Top
+viewerInfo.ZIndex = 5
+viewerInfo.Parent = viewerPanel
+
+local backButton = Instance.new("TextButton")
+backButton.Name = "BackButton"
+backButton.Size = UDim2.new(0, 92, 0, 32)
+backButton.Position = UDim2.new(0, 12, 0, 72)
+backButton.BackgroundColor3 = Color3.fromRGB(120, 45, 45)
+backButton.BorderSizePixel = 0
+backButton.Font = Enum.Font.GothamBold
+backButton.Text = "Back"
+backButton.TextSize = 14
+backButton.TextColor3 = Color3.fromRGB(255, 235, 235)
+backButton.AutoButtonColor = true
+backButton.ZIndex = 5
+backButton.Parent = viewerPanel
+
+local backCorner = Instance.new("UICorner")
+backCorner.CornerRadius = UDim.new(0, 8)
+backCorner.Parent = backButton
+
+local backStroke = Instance.new("UIStroke")
+backStroke.Color = Color3.fromRGB(165, 80, 80)
+backStroke.Thickness = 1
+backStroke.Parent = backButton
+
+local viewerViewport = Instance.new("ViewportFrame")
+viewerViewport.Name = "ViewerViewport"
+viewerViewport.Size = UDim2.new(1, -24, 1, -120)
+viewerViewport.Position = UDim2.new(0, 12, 0, 112)
+viewerViewport.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
+viewerViewport.BorderSizePixel = 0
+viewerViewport.Ambient = Color3.fromRGB(190, 190, 190)
+viewerViewport.LightColor = Color3.fromRGB(255, 255, 255)
+viewerViewport.LightDirection = Vector3.new(-1, -1, -1)
+viewerViewport.Active = true
+viewerViewport.Selectable = false
+viewerViewport.ZIndex = 5
+viewerViewport.Parent = viewerPanel
+
+local viewerViewportCorner = Instance.new("UICorner")
+viewerViewportCorner.CornerRadius = UDim.new(0, 10)
+viewerViewportCorner.Parent = viewerViewport
+
+local viewerViewportStroke = Instance.new("UIStroke")
+viewerViewportStroke.Color = Color3.fromRGB(55, 55, 65)
+viewerViewportStroke.Thickness = 1
+viewerViewportStroke.Parent = viewerViewport
+
+local records = {}
+local seen = {}
+
+local function getPath(inst)
+	local parts = {}
+	local current = inst
+	while current and current ~= game do
+		table.insert(parts, 1, current.Name)
+		current = current.Parent
+	end
+	return table.concat(parts, " > ")
+end
+
+local function normalize(text)
+	return string.lower(tostring(text or ""))
+end
+
+local function matchesQuery(record, query)
+	query = normalize(query)
+	if query == "" then
+		return true
+	end
+
+	local fields = {
+		record.displayName,
+		record.path,
+		record.kind,
+		record.meshId,
+		record.textureId,
+		record.meshType,
+	}
+
+	for _, field in ipairs(fields) do
+		if normalize(field):find(query, 1, true) then
+			return true
+		end
+	end
+
+	return false
+end
+
+local function refreshCanvas()
+	task.defer(function()
+		scrolling.CanvasSize = UDim2.new(0, 0, 0, layout.AbsoluteContentSize.Y + 16)
+	end)
+end
+
+trackConnection(layout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(refreshCanvas))
+
+local function refreshFilter()
+	local query = searchBox.Text
+	for _, record in ipairs(records) do
+		record.row.Visible = matchesQuery(record, query)
+	end
+	countLabel.Text = ("Logged meshes: %d"):format(#records)
+	refreshCanvas()
+end
+
+local function animateNewRow(row)
+	local baseColor = Color3.fromRGB(30, 30, 36)
+	local litColor = Color3.fromRGB(60, 60, 72)
+
+	row.BackgroundColor3 = litColor
+
+	local strokeObj = row:FindFirstChildOfClass("UIStroke")
+	if strokeObj then
+		strokeObj.Color = Color3.fromRGB(110, 110, 125)
+	end
+
+	local tweenInfo = TweenInfo.new(1.4, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+	TweenService:Create(row, tweenInfo, { BackgroundColor3 = baseColor }):Play()
+
+	if strokeObj then
+		TweenService:Create(strokeObj, tweenInfo, { Color = Color3.fromRGB(55, 55, 65) }):Play()
+	end
+end
+
+local function createPreview(viewportFrame, inst, zoomMultiplier, destroyViewportOnCleanup)
+	for _, child in ipairs(viewportFrame:GetChildren()) do
+		child:Destroy()
+	end
+
+	local worldModel = Instance.new("WorldModel")
+	worldModel.Parent = viewportFrame
+
+	local camera = Instance.new("Camera")
+	camera.FieldOfView = 35
+	camera.Parent = viewportFrame
+	viewportFrame.CurrentCamera = camera
+
+	local renderObject
+
+	if inst:IsA("MeshPart") then
+		local clone = inst:Clone()
+		clone.Anchored = true
+		clone.CanCollide = false
+		clone.CanTouch = false
+		clone.CanQuery = false
+		clone.CastShadow = false
+		clone.Parent = worldModel
+		renderObject = clone
+	elseif inst:IsA("SpecialMesh") then
+		local basePart = Instance.new("Part")
+		basePart.Anchored = true
+		basePart.CanCollide = false
+		basePart.CanTouch = false
+		basePart.CanQuery = false
+		basePart.CastShadow = false
+		basePart.Size = Vector3.new(1, 1, 1)
+		basePart.Transparency = 0
+		basePart.Color = Color3.fromRGB(235, 235, 235)
+		basePart.Material = Enum.Material.SmoothPlastic
+		basePart.Parent = worldModel
+
+		local mesh = inst:Clone()
+		mesh.Parent = basePart
+		renderObject = basePart
+	end
+
+	if not renderObject then
+		return nil
+	end
+
+	local cf, size = worldModel:GetBoundingBox()
+	local maxAxis = math.max(size.X, size.Y, size.Z)
+	local dist = math.max(6.5, maxAxis * (zoomMultiplier or 2.35))
+	camera.CFrame = CFrame.new(cf.Position + Vector3.new(dist, dist * 0.35, dist), cf.Position)
+
+	local item = {
+		worldModel = worldModel,
+		camera = camera,
+		object = renderObject,
+		destroy = function()
+			if destroyViewportOnCleanup then
+				if viewportFrame then
+					viewportFrame:Destroy()
+				end
+			else
+				if viewportFrame and viewportFrame.Parent then
+					for _, child in ipairs(viewportFrame:GetChildren()) do
+						child:Destroy()
+					end
+					viewportFrame.CurrentCamera = nil
+				end
+			end
+		end,
+	}
+
+	return item
+end
+
+local function spinThumbnailItem(item, dt)
+	local obj = item and item.object
+	if not obj or not obj.Parent then
+		return
+	end
+
+	local pivot
+	if obj:IsA("BasePart") then
+		pivot = obj.CFrame
+	elseif obj:IsA("Model") then
+		pivot = obj:GetPivot()
+	end
+
+	if not pivot then
+		return
+	end
+
+	local rotated = pivot * CFrame.Angles(0, dt * 0.9, 0)
+
+	if obj:IsA("BasePart") then
+		obj.CFrame = rotated
+	elseif obj:IsA("Model") then
+		obj:PivotTo(rotated)
+	end
+
+	local worldModel = item.worldModel
+	local camera = item.camera
+	if worldModel and camera then
+		local cf, size = worldModel:GetBoundingBox()
+		local maxAxis = math.max(size.X, size.Y, size.Z)
+		local dist = math.max(6.5, maxAxis * 2.35)
+		camera.CFrame = CFrame.new(cf.Position + Vector3.new(dist, dist * 0.35, dist), cf.Position)
+	end
+end
+
+local function updateViewerCamera(viewerState)
+	if not viewerState then
+		return
+	end
+
+	local camera = viewerState.camera
+	if not camera then
+		return
+	end
+
+	local target = viewerState.target
+	local yaw = viewerState.yaw
+	local pitch = viewerState.pitch
+	local distance = viewerState.distance
+
+	local offset = Vector3.new(
+		math.cos(pitch) * math.sin(yaw),
+		math.sin(pitch),
+		math.cos(pitch) * math.cos(yaw)
+	) * distance
+
+	camera.CFrame = CFrame.lookAt(target + offset, target)
+end
+
+local function closeViewer()
+	if not viewerPanel.Visible then
+		return
+	end
+
+	destroyCurrentViewerPreview()
+	viewerPanel.Visible = false
+	listPanel.Visible = true
+end
+
+local function openViewer(record)
+	if not record or not record.instance or not record.instance.Parent then
+		return
+	end
+
+	destroyCurrentViewerPreview()
+
+	listPanel.Visible = false
+	viewerPanel.Visible = true
+
+	viewerTitle.Text = "Mesh Viewer"
+	viewerInfo.Text = string.format(
+		"%s | MeshId: %s | TextureId: %s | Path: %s",
+		record.kind or "Mesh",
+		(record.meshId ~= "" and record.meshId or "None"),
+		(record.textureId ~= "" and record.textureId or "None"),
+		record.path or "Unknown"
+	)
+
+	-- Reset every time so the viewer can always be reopened.
+	currentViewerRecord = record
+
+	for _, child in ipairs(viewerViewport:GetChildren()) do
+		child:Destroy()
+	end
+
+	local worldModel = Instance.new("WorldModel")
+	worldModel.Parent = viewerViewport
+
+	local camera = Instance.new("Camera")
+	camera.FieldOfView = 35
+	camera.Parent = viewerViewport
+	viewerViewport.CurrentCamera = camera
+
+	local renderObject
+
+	if record.instance:IsA("MeshPart") then
+		local clone = record.instance:Clone()
+		clone.Anchored = true
+		clone.CanCollide = false
+		clone.CanTouch = false
+		clone.CanQuery = false
+		clone.CastShadow = false
+		clone.Parent = worldModel
+		renderObject = clone
+	elseif record.instance:IsA("SpecialMesh") then
+		local basePart = Instance.new("Part")
+		basePart.Anchored = true
+		basePart.CanCollide = false
+		basePart.CanTouch = false
+		basePart.CanQuery = false
+		basePart.CastShadow = false
+		basePart.Size = Vector3.new(1, 1, 1)
+		basePart.Transparency = 0
+		basePart.Color = Color3.fromRGB(235, 235, 235)
+		basePart.Material = Enum.Material.SmoothPlastic
+		basePart.Parent = worldModel
+
+		local mesh = record.instance:Clone()
+		mesh.Parent = basePart
+		renderObject = basePart
+	end
+
+	if not renderObject then
+		return
+	end
+
+	local cf, size = worldModel:GetBoundingBox()
+	local maxAxis = math.max(size.X, size.Y, size.Z)
+
+	currentViewerPreview = {
+		worldModel = worldModel,
+		camera = camera,
+		object = renderObject,
+		target = cf.Position,
+		yaw = math.rad(45),
+		pitch = math.rad(-18),
+		distance = math.max(6.5, maxAxis * 3.2),
+		destroy = function()
+			if viewerViewport and viewerViewport.Parent then
+				for _, child in ipairs(viewerViewport:GetChildren()) do
+					child:Destroy()
+				end
+				viewerViewport.CurrentCamera = nil
+			end
+		end,
+	}
+
+	updateViewerCamera(currentViewerPreview)
+end
+
+local function makeCopyString(meshId, textureId)
+	return string.format(
+		"MESHID: %s TEXTUREID: %s",
+		(meshId ~= "" and meshId or "None"),
+		(textureId ~= "" and textureId or "None")
+	)
+end
+
+local function addRecord(kind, inst, meshId, textureId, meshType)
+	logCounter += 1
+
+	local displayName = inst.Name
+	local path = getPath(inst)
+
+	local row = Instance.new("Frame")
+	row.Name = "Row"
+	row.Size = UDim2.new(1, 0, 0, 88)
+	row.BackgroundColor3 = Color3.fromRGB(30, 30, 36)
+	row.BorderSizePixel = 0
+	row.LayoutOrder = -logCounter
+	row.ZIndex = 3
+	row.Parent = scrolling
+
+	local rowCorner = Instance.new("UICorner")
+	rowCorner.CornerRadius = UDim.new(0, 8)
+	rowCorner.Parent = row
+
+	local rowStroke = Instance.new("UIStroke")
+	rowStroke.Color = Color3.fromRGB(55, 55, 65)
+	rowStroke.Thickness = 1
+	rowStroke.Parent = row
+
+	local previewButton = Instance.new("TextButton")
+	previewButton.Name = "PreviewButton"
+	previewButton.Size = UDim2.new(0, 56, 0, 56)
+	previewButton.Position = UDim2.new(0, 10, 0, 8)
+	previewButton.BackgroundTransparency = 1
+	previewButton.BorderSizePixel = 0
+	previewButton.Text = ""
+	previewButton.AutoButtonColor = false
+	previewButton.ZIndex = 4
+	previewButton.Parent = row
+
+	local previewViewport = Instance.new("ViewportFrame")
+	previewViewport.Name = "Preview"
+	previewViewport.Size = UDim2.new(1, 0, 1, 0)
+	previewViewport.BackgroundColor3 = Color3.fromRGB(22, 22, 26)
+	previewViewport.BorderSizePixel = 0
+	previewViewport.Ambient = Color3.fromRGB(180, 180, 180)
+	previewViewport.LightColor = Color3.fromRGB(255, 255, 255)
+	previewViewport.LightDirection = Vector3.new(-1, -1, -1)
+	previewViewport.ZIndex = 4
+	previewViewport.Parent = previewButton
+
+	local previewCorner = Instance.new("UICorner")
+	previewCorner.CornerRadius = UDim.new(0, 8)
+	previewCorner.Parent = previewViewport
+
+	local previewStroke = Instance.new("UIStroke")
+	previewStroke.Color = Color3.fromRGB(55, 55, 65)
+	previewStroke.Thickness = 1
+	previewStroke.Parent = previewViewport
+
+	local kindLabel = Instance.new("TextLabel")
+	kindLabel.BackgroundTransparency = 1
+	kindLabel.Position = UDim2.new(0, 76, 0, 6)
+	kindLabel.Size = UDim2.new(1, -168, 0, 18)
+	kindLabel.Font = Enum.Font.GothamBold
+	kindLabel.TextSize = 14
+	kindLabel.TextColor3 = Color3.fromRGB(255, 220, 120)
+	kindLabel.TextXAlignment = Enum.TextXAlignment.Left
+	kindLabel.Text = kind
+	kindLabel.ZIndex = 4
+	kindLabel.Parent = row
+
+	local copyButton = Instance.new("TextButton")
+	copyButton.Name = "CopyButton"
+	copyButton.Size = UDim2.new(0, 78, 0, 24)
+	copyButton.Position = UDim2.new(1, -88, 0, 8)
+	copyButton.BackgroundColor3 = Color3.fromRGB(40, 40, 48)
+	copyButton.BorderSizePixel = 0
+	copyButton.Font = Enum.Font.GothamBold
+	copyButton.Text = "Copy IDs"
+	copyButton.TextSize = 12
+	copyButton.TextColor3 = Color3.fromRGB(235, 235, 235)
+	copyButton.AutoButtonColor = true
+	copyButton.ZIndex = 4
+	copyButton.Parent = row
+
+	local copyCorner = Instance.new("UICorner")
+	copyCorner.CornerRadius = UDim.new(0, 7)
+	copyCorner.Parent = copyButton
+
+	local copyStroke = Instance.new("UIStroke")
+	copyStroke.Color = Color3.fromRGB(70, 70, 80)
+	copyStroke.Thickness = 1
+	copyStroke.Parent = copyButton
+
+	local nameLabel = Instance.new("TextLabel")
+	nameLabel.BackgroundTransparency = 1
+	nameLabel.Position = UDim2.new(0, 76, 0, 24)
+	nameLabel.Size = UDim2.new(1, -168, 0, 16)
+	nameLabel.Font = Enum.Font.Gotham
+	nameLabel.TextSize = 13
+	nameLabel.TextColor3 = Color3.fromRGB(235, 235, 235)
+	nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+	nameLabel.Text = "Name: " .. displayName
+	nameLabel.ZIndex = 4
+	nameLabel.Parent = row
+
+	local pathLabel = Instance.new("TextLabel")
+	pathLabel.BackgroundTransparency = 1
+	pathLabel.Position = UDim2.new(0, 76, 0, 40)
+	pathLabel.Size = UDim2.new(1, -168, 0, 14)
+	pathLabel.Font = Enum.Font.Gotham
+	pathLabel.TextSize = 12
+	pathLabel.TextColor3 = Color3.fromRGB(175, 175, 185)
+	pathLabel.TextXAlignment = Enum.TextXAlignment.Left
+	pathLabel.TextTruncate = Enum.TextTruncate.AtEnd
+	pathLabel.Text = "Path: " .. path
+	pathLabel.ZIndex = 4
+	pathLabel.Parent = row
+
+	local normalizedMeshId = tostring(meshId or "")
+	local normalizedTextureId = tostring(textureId or "")
+
+	local infoLabel = Instance.new("TextLabel")
+	infoLabel.BackgroundTransparency = 1
+	infoLabel.Position = UDim2.new(0, 76, 0, 56)
+	infoLabel.Size = UDim2.new(1, -168, 0, 12)
+	infoLabel.Font = Enum.Font.Gotham
+	infoLabel.TextSize = 11
+	infoLabel.TextColor3 = Color3.fromRGB(145, 145, 155)
+	infoLabel.TextXAlignment = Enum.TextXAlignment.Left
+	infoLabel.TextTruncate = Enum.TextTruncate.AtEnd
+	infoLabel.Text = string.format(
+		"MESHID: %s   TEXTUREID: %s%s",
+		(normalizedMeshId ~= "" and normalizedMeshId or "None"),
+		(normalizedTextureId ~= "" and normalizedTextureId or "None"),
+		(meshType and meshType ~= "" and ("   TYPE: " .. tostring(meshType)) or "")
+	)
+	infoLabel.ZIndex = 4
+	infoLabel.Parent = row
+
+	local record = {
+		instance = inst,
+		kind = kind,
+		displayName = displayName,
+		path = path,
+		meshId = normalizedMeshId,
+		textureId = normalizedTextureId,
+		meshType = meshType or "",
+		row = row,
+	}
+
+	local thumbnailItem = createPreview(previewViewport, inst, 2.35, true)
+	if thumbnailItem then
+		table.insert(thumbnailItems, thumbnailItem)
+	end
+
+	trackConnection(previewButton.MouseButton1Click:Connect(function()
+		openViewer(record)
+	end))
+
+	trackConnection(copyButton.MouseButton1Click:Connect(function()
+		local formatted = makeCopyString(record.meshId, record.textureId)
+		local copied = copyToClipboard(formatted)
+
+		local originalText = copyButton.Text
+		copyButton.Text = copied and "Copied!" or "No clipboard"
+		task.delay(1.1, function()
+			if copyButton and copyButton.Parent then
+				copyButton.Text = originalText
+			end
+		end)
+	end))
+
+	table.insert(records, 1, record)
+	animateNewRow(row)
+	refreshFilter()
+end
+
+local function isMeshInstance(inst)
+	return inst:IsA("MeshPart") or inst:IsA("SpecialMesh")
+end
+
+local function logIfMesh(inst)
+	if closed or seen[inst] then
+		return
+	end
+
+	if inst:IsA("MeshPart") then
+		seen[inst] = true
+		addRecord("MeshPart", inst, tostring(inst.MeshId), tostring(inst.TextureID), "")
+	elseif inst:IsA("SpecialMesh") then
+		seen[inst] = true
+		addRecord("SpecialMesh", inst, tostring(inst.MeshId), tostring(inst.TextureId), tostring(inst.MeshType))
+	end
+end
+
+for _, inst in ipairs(Workspace:GetDescendants()) do
+	if isMeshInstance(inst) then
+		logIfMesh(inst)
+	end
+end
+
+trackConnection(Workspace.DescendantAdded:Connect(function(inst)
+	if isMeshInstance(inst) then
+		logIfMesh(inst)
+	end
+end))
+
+trackConnection(searchBox:GetPropertyChangedSignal("Text"):Connect(function()
+	refreshFilter()
+end))
+
+trackConnection(RunService.RenderStepped:Connect(function(dt)
+	if closed then
+		return
+	end
+
+	for _, item in ipairs(thumbnailItems) do
+		spinThumbnailItem(item, dt)
+	end
+
+	if currentViewerPreview then
+		updateViewerCamera(currentViewerPreview)
+	end
+end))
+
+trackConnection(viewerViewport.MouseEnter:Connect(function()
+	viewerHovering = true
+end))
+
+trackConnection(viewerViewport.MouseLeave:Connect(function()
+	viewerHovering = false
+	viewerDragging = false
+	viewerDragLastPos = nil
+end))
+
+trackConnection(viewerViewport.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 then
+		viewerDragging = true
+		viewerDragLastPos = input.Position
+	end
+end))
+
+trackConnection(UserInputService.InputChanged:Connect(function(input)
+	if closed then
+		return
+	end
+
+	-- Drag to rotate only when the pointer is over the viewer and left mouse is held.
+	if viewerDragging and input.UserInputType == Enum.UserInputType.MouseMovement and currentViewerPreview then
+		local lastPos = viewerDragLastPos
+		if lastPos then
+			local delta = input.Position - lastPos
+			currentViewerPreview.yaw -= delta.X * 0.01
+			currentViewerPreview.pitch = math.clamp(currentViewerPreview.pitch + delta.Y * 0.01, -1.45, 1.45)
+			updateViewerCamera(currentViewerPreview)
+		end
+		viewerDragLastPos = input.Position
+		return
+	end
+
+	-- Zoom only when the mouse is hovering the viewer.
+	if viewerHovering and input.UserInputType == Enum.UserInputType.MouseWheel and currentViewerPreview then
+		local wheelDelta = input.Position.Z
+		if wheelDelta ~= 0 then
+			currentViewerPreview.distance = math.clamp(currentViewerPreview.distance - (wheelDelta * 0.75), 2.5, 60)
+			updateViewerCamera(currentViewerPreview)
+		end
+	end
+end))
+
+trackConnection(UserInputService.InputEnded:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 then
+		viewerDragging = false
+		viewerDragLastPos = nil
+	end
+end))
+
+-- Dragging the top bar only.
+local dragging = false
+local dragStart
+local startPos
+
+trackConnection(topBar.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 then
+		dragging = true
+		dragStart = input.Position
+		startPos = main.Position
+	end
+end))
+
+trackConnection(topBar.InputEnded:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 then
+		dragging = false
+	end
+end))
+
+trackConnection(UserInputService.InputChanged:Connect(function(input)
+	if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+		local delta = input.Position - dragStart
+		main.Position = UDim2.new(
+			startPos.X.Scale,
+			startPos.X.Offset + delta.X,
+			startPos.Y.Scale,
+			startPos.Y.Offset + delta.Y
+		)
+	end
+end))
+
+local function closeGui()
+	if closed then
+		return
+	end
+	closed = true
+	destroyCurrentViewerPreview()
+	disconnectAll()
+	clearThumbnailItems()
+	if screenGui then
+		screenGui:Destroy()
+	end
+end
+
+trackConnection(closeButton.MouseButton1Click:Connect(closeGui))
+trackConnection(backButton.MouseButton1Click:Connect(closeViewer))
+
+refreshCanvas()
+refreshFilter()
